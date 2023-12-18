@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
 
     string algorithm = string(argv[2]);
 
+
     if (algorithm == "naive") {
         naive_multiplication();
     } else if (algorithm == "row") {
@@ -38,13 +39,14 @@ int main(int argc, char **argv) {
         column_multiplication();
     } else if (algorithm == "block") {
         block_multiplication();
+    } else if (algorithm == "cannon") {
+        cannon_algorithm();
     } else {
         cerr << "Unknown algorithm\n";
     }
-
     if (MPI::processID == 0) {
         double endTime = MPI_Wtime();
-        cout << fixed << setprecision(6) <<endTime - startTime << '\n';
+        cout << fixed << setprecision(6) << endTime - startTime << '\n';
     }
 
     if (MPI::processID == 0) {

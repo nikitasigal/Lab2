@@ -59,10 +59,8 @@ void row_multiplication() {
                 C.data, resultCounts, resultDisplacements, MPI_DOUBLE,
                 0, MPI_COMM_WORLD);
 
-    delete[] counts;
-    delete[] displacements;
-    delete[] resultCounts;
-    delete[] resultDisplacements;
+    delete[] counts, delete[] displacements;
+    delete[] resultCounts, delete[] resultDisplacements;
 }
 
 void column_multiplication() {
@@ -121,17 +119,16 @@ void column_multiplication() {
     // Reduce local results
     MPI_Reduce(localC.data, C.data, C.size(), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    delete[] counts;
-    delete[] displacements;
-    delete[] Bcounts;
-    delete[] Bdisplacements;
+    delete[] counts, delete[] displacements;
+    delete[] Bcounts, delete[] Bdisplacements;
 }
 
 void block_multiplication() {
     // Abort if process count is not a square
     int blocks = MPI::processCount;
     int gridSize = int(sqrt(blocks));
-    if (MPI::processID == 0 && gridSize * gridSize != blocks) {\
+    if (MPI::processID == 0 && gridSize * gridSize != blocks) {
+        \
         cerr << "The process count must be a square for block multiplication!\n";
         MPI::abort();
     }
@@ -219,4 +216,141 @@ void block_multiplication() {
 
     // Reduce local results
     MPI_Reduce(localC.data, C.data, C.size(), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    delete[] gridRows, delete[] gridCols;
+    delete[] blockedData;
+    delete[] blockCounts, delete[] blockDisplacements;
+}
+
+void cannon_algorithm() {
+    // Abort if process count is not a square
+    int blocks = MPI::processCount;
+    int gridSize = int(sqrt(blocks));
+    if (MPI::processID == 0 && gridSize * gridSize != blocks) {
+        cerr << "The process count must be a square for block multiplication!\n";
+        MPI::abort();
+    }
+
+    // Share matrix dimensions
+    MPI_Bcast(&A.rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&A.cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    B.rows = A.cols;
+    MPI_Bcast(&B.cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    C.rows = A.rows;
+    C.cols = B.cols;
+
+    // Abort if A or B is not a square matrix, if their sizes are different or the size is not divisible by gridSize
+    if (MPI::processID == 0 && (A.rows != A.cols || B.rows != B.cols || C.rows != C.cols || (A.rows % gridSize) != 0)) {
+        cerr << "Matrices must be square and of the same size for Cannon's algorithm!\n";
+        MPI::abort();
+    }
+    int N = A.rows;
+
+    // Calculate size of each block
+    int blockSize = N / gridSize;
+
+    // Determine the upper left corner of each block
+    int *gridRows = new int[blocks];
+    int *gridCols = new int[blocks];
+    for (int block = 0; block < blocks; ++block) {
+        int gridRow = block / gridSize;
+        int gridCol = block % gridSize;
+
+        gridRows[block] = gridRow * blockSize;
+        gridCols[block] = gridCol * blockSize;
+    }
+
+    // Reorder data by the blocks – only on the main process
+    double *blockedDataA = new double[N * N];
+    double *blockedDataB = new double[N * N];
+    int *blockCounts = new int[blocks];
+    int *blockDisplacements = new int[blocks];
+    if (MPI::processID == 0) {
+        int cur = 0;
+        for (int block = 0; block < blocks; block++) {
+            // Upper left corner
+            int r1 = gridRows[block];
+            int r2 = r1 + blockSize;
+
+            // Lower right corner
+            int c1 = gridCols[block];
+            int c2 = c1 + blockSize;
+
+            blockDisplacements[block] = cur;
+
+            for (int i = r1; i < r2; i++)
+                for (int j = c1; j < c2; j++) {
+                    blockedDataA[cur] = A(i, j);
+                    blockedDataB[cur++] = B(i, j);
+                }
+
+            blockCounts[block] = cur - blockDisplacements[block];
+        }
+    }
+    MPI::barrier();
+
+    // Scatter the blocks
+    Matrix localBlockA(blockSize), localBlockB(blockSize);
+    MPI_Scatterv(blockedDataA, blockCounts, blockDisplacements, MPI_DOUBLE,
+                 localBlockA.data, localBlockA.size(), MPI_DOUBLE,
+                 0, MPI_COMM_WORLD);
+    MPI_Scatterv(blockedDataB, blockCounts, blockDisplacements, MPI_DOUBLE,
+                 localBlockB.data, localBlockB.size(), MPI_DOUBLE,
+                 0, MPI_COMM_WORLD);
+
+    // Get position of block in the grid
+    int gridRow = MPI::processID / gridSize;
+    int gridCol = MPI::processID % gridSize;
+
+    // Get the block numbers for initial shift
+    int nextBlockA = gridRow * gridSize + (gridCol + gridSize - gridRow) % gridSize;
+    int prevBlockA = gridRow * gridSize + (gridCol + gridRow) % gridSize;
+
+    int nextBlockB = (gridRow + gridSize - gridCol) % gridSize * gridSize + gridCol;
+    int prevBlockB = (gridRow + gridCol) % gridSize * gridSize + gridCol;
+
+    // Perform initial cycle shift
+    MPI_Sendrecv_replace(localBlockA.data, blockSize * blockSize, MPI_DOUBLE,
+                         nextBlockA, 0,
+                         prevBlockA, MPI_ANY_TAG,
+                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    MPI_Sendrecv_replace(localBlockB.data, blockSize * blockSize, MPI_DOUBLE,
+                         nextBlockB, 1,
+                         prevBlockB, MPI_ANY_TAG,
+                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+    // Get the block numbers for consecutive shifts
+    nextBlockA = gridRow * gridSize + (gridCol + gridSize - 1) % gridSize;
+    prevBlockA = gridRow * gridSize + (gridCol + 1) % gridSize;
+
+    nextBlockB = (gridRow + gridSize - 1) % gridSize * gridSize + gridCol;
+    prevBlockB = (gridRow + 1) % gridSize * gridSize + gridCol;
+
+    // Start calculation cycle
+    Matrix localC(N);
+    for (int s = 0; s < gridSize; s++) {
+        // Compute local result naively
+        for (int k = 0; k < blockSize; k++)
+            for (int i = 0; i < blockSize; i++)
+                for (int j = 0; j < blockSize; j++)
+                    localC(i + gridRows[MPI::processID], k + gridCols[MPI::processID]) +=
+                            localBlockA(i, j) * localBlockB(j, k);
+
+        // Perform cycle shift
+        MPI_Sendrecv_replace(localBlockA.data, blockSize * blockSize, MPI_DOUBLE,
+                             nextBlockA, 0,
+                             prevBlockA, MPI_ANY_TAG,
+                             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Sendrecv_replace(localBlockB.data, blockSize * blockSize, MPI_DOUBLE,
+                             nextBlockB, 1,
+                             prevBlockB, MPI_ANY_TAG,
+                             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+
+    // Reduce local results
+    MPI_Reduce(localC.data, C.data, C.size(), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    delete[] gridRows, delete[] gridCols;
+    delete[] blockedDataA, delete[] blockedDataB;
+    delete[] blockCounts, delete[] blockDisplacements;
 }
