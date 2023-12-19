@@ -29,8 +29,6 @@ int main(int argc, char **argv) {
     }
 
     string algorithm = string(argv[2]);
-
-
     if (algorithm == "naive") {
         naive_multiplication();
     } else if (algorithm == "row") {
@@ -44,12 +42,12 @@ int main(int argc, char **argv) {
     } else {
         cerr << "Unknown algorithm\n";
     }
+
+    MPI::barrier();
     if (MPI::processID == 0) {
         double endTime = MPI_Wtime();
         cout << fixed << setprecision(6) << endTime - startTime << '\n';
-    }
 
-    if (MPI::processID == 0) {
         Global::finalize();
     }
 

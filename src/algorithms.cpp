@@ -187,7 +187,7 @@ void block_multiplication() {
 
     // Rows and columns for this process
     int localRows = blockRows + (MPI::processID / gridSize < extraRows);
-    int localCols = blockCols + (MPI::processID / gridSize < extraCols);
+    int localCols = blockCols + (MPI::processID % gridSize < extraCols);
 
     // Scatter the blocks
     Matrix localBlock(localRows, localCols);
@@ -199,7 +199,7 @@ void block_multiplication() {
     int *Bcounts = new int[blocks];
     int *Bdisplacements = new int[blocks];
     for (int block = 0; block < blocks; block++) {
-        Bcounts[block] = (blockCols + (block / gridSize < extraCols)) * B.cols;
+        Bcounts[block] = (blockCols + (block % gridSize < extraCols)) * B.cols;
         Bdisplacements[block] = gridCols[block] * B.cols;
     }
     Matrix localB(B.rows, B.cols);
